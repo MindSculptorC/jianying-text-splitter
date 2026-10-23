@@ -44,11 +44,15 @@ static void Create(NSURL *output) {
     [writer addInput:video]; [writer addInput:audio];
     Require([writer startWriting], writer.error.localizedDescription);
     [writer startSessionAtSourceTime:kCMTimeZero];
-    for (int frame = 0; frame < 90; frame++) {
-        while (!video.readyForMoreMediaData || !audio.readyForMoreMediaData) {
-            Require(writer.status == AVAssetWriterStatusWriting, writer.error.localizedDescription);
-            usleep(2000);
-        }
+    // Drain the two inputs independently: encoder backpressure can otherwise
+    // deadlock when one input needs the other to advance (notably on CI VMs).
+    int frame = 0, audioFrame = 0;
+    NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:45];
+    while (frame < 90 || audioFrame < 90) {
+        Require(writer.status == AVAssetWriterStatusWriting, writer.error.localizedDescription);
+        Require(deadline.timeIntervalSinceNow > 0, @"fixture encoder timed out");
+        BOOL advanced = NO;
+        if (frame < 90 && video.readyForMoreMediaData) {
         CVPixelBufferRef pixel = NULL;
         Require(CVPixelBufferPoolCreatePixelBuffer(kCFAllocatorDefault, adaptor.pixelBufferPool, &pixel) == kCVReturnSuccess, @"pixel creation");
         CVPixelBufferLockBaseAddress(pixel, 0);
@@ -64,11 +68,20 @@ static void Create(NSURL *output) {
         CVPixelBufferUnlockBaseAddress(pixel, 0);
         Require([adaptor appendPixelBuffer:pixel withPresentationTime:CMTimeMake(frame, 30)], writer.error.localizedDescription);
         CVPixelBufferRelease(pixel);
-        CMSampleBufferRef audioSample = AudioFrame(frame);
-        Require([audio appendSampleBuffer:audioSample], writer.error.localizedDescription);
-        CFRelease(audioSample);
+            frame++;
+            advanced = YES;
+            if (frame == 90) [video markAsFinished];
+        }
+        if (audioFrame < 90 && audio.readyForMoreMediaData) {
+            CMSampleBufferRef audioSample = AudioFrame(audioFrame);
+            Require([audio appendSampleBuffer:audioSample], writer.error.localizedDescription);
+            CFRelease(audioSample);
+            audioFrame++;
+            advanced = YES;
+            if (audioFrame == 90) [audio markAsFinished];
+        }
+        if (!advanced) usleep(2000);
     }
-    [video markAsFinished]; [audio markAsFinished];
     [writer endSessionAtSourceTime:CMTimeMake(3, 1)];
     dispatch_semaphore_t done = dispatch_semaphore_create(0);
     [writer finishWritingWithCompletionHandler:^{ dispatch_semaphore_signal(done); }];
