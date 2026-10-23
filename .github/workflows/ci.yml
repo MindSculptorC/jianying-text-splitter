@@ -1,0 +1,26 @@
+name: macOS build and tests
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python3 -m unittest discover -s tests -v
+      - run: python3 -m unittest test_register -v
+      - run: bash package.sh
+      - run: python3 native/test_media_export.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: jianying-text-splitter-macos-universal
+          path: |
+            dist/*.zip
+            dist/使用说明.md
+            dist/SHA256SUMS.txt
